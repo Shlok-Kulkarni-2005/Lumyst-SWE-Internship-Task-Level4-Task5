@@ -1,0 +1,167 @@
+Utility Function Detection – Notes
+This tool flags likely utility/trivial functions (formatters, parsers, getters/setters, etc.) and ranks functions so you can focus on real business logic. It uses fast static analysis—no ML or LLMs.
+
+Problem Statement
+Large codebases contain significant noise:
+
+40-60% of functions in mature projects are utilities (formatters, parsers, type-checkers)
+Graph analysis becomes computationally expensive and less insightful
+Manual filtering is time-consuming and error-prone
+False positives lead to incomplete business logic analysis
+Architecture & Approach
+Design
+Keep it simple and fast. Heuristics over heavy parsing. Prefer fewer knobs.
+
+Three-Pass Analysis
+Pass 1: Metric Extraction
+Static analysis of each function:
+
+Code metrics: Lines of code, cyclomatic complexity
+Structural patterns: Parameters, return types, docstrings
+Naming analysis: Business vs. utility keyword matching
+Pass 2: Relationship Mapping
+Build a call graph to understand:
+
+Function dependencies
+Call frequency (central vs. peripheral functions)
+Integration patterns
+Pass 3: Scoring & Classification
+Multi-factor scoring system (see below) produces normalized 0-100 scores.
+
+Algorithms & Techniques
+1. Cyclomatic Complexity Analysis
+Purpose: More complex functions typically contain business logic.
+
+Complexity = 1 + count(if, elif, for, while, except, logical operators)
+Reasoning: Utility functions (formatters, parsers) are usually linear. Business logic involves branching.
+
+Scoring: (complexity / 10) × 25 points (capped at 25)
+
+2. Naming Pattern Recognition
+Purpose: Function names strongly indicate purpose.
+
+Utility patterns (reduce score):
+
+Prefixes: get_, set_, is_, format_, parse_, encode_, validate_
+Generic verbs: convert, transform, filter, map
+Library conventions: _util, _helper, _common
+Business patterns (boost score):
+
+Domain verbs: create, update, delete, process, calculate, fetch
+Entity operations: save, initialize, handle, execute
+Scoring:
+
+Business keywords: +30 points
+Generic patterns: -15 points
+Default: +15 points
+3. Side-Effect Detection
+Purpose: Functions that modify state or perform I/O are often business-critical.
+
+Detected patterns:
+
+Object mutations: .append(), .update(), .set()
+State changes: self.attr = value
+I/O operations: .write(), .save()
+Global state: global keyword
+Scoring: +20 points if side effects detected
+
+4. Return Type Analysis
+Purpose: Complex return types indicate domain-specific operations.
+
+Indicators:
+
+Return type annotations with Dict, List, Model, Schema, Response
+Multi-value returns (tuples, custom objects)
+Scoring: +15 points for complex types
+
+5. Call Graph Frequency
+Purpose: Frequently called functions are usually utilities; highly integrated functions are core logic.
+
+However, we invert this for business logic:
+
+Functions with 0-1 callers: Infrastructure/standalone
+Functions with 2+ callers: Likely important (especially if complex)
+Scoring: min(called_by_count × 2, 10) points
+
+6. Combined Scoring Formula
+Total Score (0-100) = 
+  + Naming Score (0-30)
+  - Generic Helper Penalty (-15)
+  + Complexity Score (0-25)
+  + Side Effects Bonus (0-20)
+  + Return Type Bonus (0-15)
+  + Call Frequency Bonus (0-10)
+  + Documentation Bonus (0-5)
+7. Classification Decision Tree
+IF lines_of_code < 2 AND complexity <= 1:
+    → TRIVIAL (0.0)
+ELSE IF generic_helper_pattern:
+    → UTILITY (1.0)
+ELSE IF 'init' or 'setup' in name:
+    → INFRASTRUCTURE (2.5)
+ELSE IF score > 60:
+    → CORE_LOGIC (5.0)
+ELSE IF score > 40:
+    → DATA_PROCESSING (4.0)
+ELSE IF score > 20:
+    → INFRASTRUCTURE (2.5)
+ELSE:
+    → UTILITY (1.0)
+Metrics & Qualitative Reasoning
+Why it’s reasonable
+- **Short one-liners** get marked TRIVIAL (lines < 2 and low complexity).
+- **Complex but side-effect-free helpers** lose points and tend to classify as utility.
+- **Business-ish functions** with side effects and usage tend to rank higher even with bland names.
+Notes on behavior
+- Tends to avoid filtering short but important logic.
+- A few utilities might land in infrastructure; score helps you sort.
+Assumptions & Trade-offs
+- Assumes conventional naming helps; still works without it.
+- Regex/static checks over AST: fast, good enough for this task.
+- Conservative scoring to limit false positives.
+Limitations
+- No semantic understanding. Dynamic calls may be missed.
+- Python-oriented. Patterns are configurable, not language-aware.
+- Doesn’t read repo history.
+Usage Example
+CLI
+Run on a FastAPI analysis JSON (stdin or file):
+
+```bash
+python intern.py -i fastapi_analysis.json --pretty
+```
+
+Only core/business logic (exclude UTILITY/TRIVIAL) with score threshold:
+
+```bash
+type fastapi_analysis.json | python intern.py --business-only --min-score 50 --pretty
+```
+
+Python API
+```python
+import json
+from intern import filter_utility_functions
+
+with open('fastapi_analysis.json', 'r', encoding='utf-8') as f:
+    analysis_json = f.read()
+
+result = filter_utility_functions(analysis_json)
+business_functions = [
+    f for f in result['ranked_functions']
+    if not f['is_utility'] and f['importance_score'] > 50
+]
+```
+
+FastAPI repository notes
+- The input JSON should follow the structure under `analysisData.graphNodes` where each node contains `id`, `label`, and `code`.
+- The detector uses static heuristics only (no LLM). It recognizes common utility helpers such as logging, math wrappers, datetime formatting/parsing, string utilities, and one-liners.
+- False positives are minimized by combining complexity, side effects, return-type annotations, call frequency, and documentation presence.
+Future Enhancements
+ML-based classifier: Train on labeled codebases for 5-10% accuracy gain
+Multi-language support: Extend patterns for JavaScript, Go, Rust
+Semantic analysis: Lightweight AST parsing for method resolution
+Temporal analysis: Track function age and modification history
+Integration metrics: API surface analysis, public vs. private functions
+Conclusion
+This service balances pragmatism with accuracy, providing enterprise-grade utility detection without over-engineering. The multi-factor scoring minimizes both false positives and false negatives, making it immediately useful for codebase analysis and architecture understanding.
+
